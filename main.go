@@ -6,9 +6,15 @@ import (
 )
 
 func main() {
-	store := mmapkv.Store[int]{}
 	var err error
 	var val int
+
+	var store *mmapkv.Store[int]
+
+	store, err = mmapkv.NewStore[int]()
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Printf("Set [key1=%d] \n", 1)
 	err = store.Set("key1", 1)
