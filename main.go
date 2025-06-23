@@ -42,4 +42,5 @@ func main() {
 		fmt.Printf("Get [key1Value] error: %v\n", err)
 	}
 
+	store.Close()
 }
