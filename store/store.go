@@ -47,12 +47,14 @@ func NewStore[T any](dbName string) (*Store[T], error) {
 	var dbLogFileName = fmt.Sprintf("/tmp/mmapkv.%s.db.bin", dbName)
 	f, err := os.OpenFile(dbLogFileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create mmapkv db log file [%s]: %v", dbLogFileName, err)
+		return nil, fmt.Errorf("failed to create mmapkv db log file [%s]: %v",
+			dbLogFileName, err)
 	}
 	defer f.Close()
 
 	if err := f.Truncate(int64(dbLogFileSize)); err != nil {
-		return nil, fmt.Errorf("failed to resize mmapkv db log file [%s] to [%d]: %v", dbLogFileName, dbLogFileSize, err)
+		return nil, fmt.Errorf("failed to resize mmapkv db log file [%s] to [%d]: %v",
+			dbLogFileName, dbLogFileSize, err)
 	}
 
 	data, err := unix.Mmap(int(f.Fd()),
@@ -62,7 +64,8 @@ func NewStore[T any](dbName string) (*Store[T], error) {
 		unix.MAP_SHARED)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to mmap db log file [%s]: %v", dbLogFileName, err)
+		return nil, fmt.Errorf("failed to mmap db log file [%s]: %v",
+			dbLogFileName, err)
 	}
 
 	var nothing T
@@ -137,7 +140,6 @@ func (s *Store[T]) setValue(key string, value any) error {
 	s.header.lastOffset = endOffset
 
 	writeHeader(&s.header, s.data)
-	//s.syncData()
 
 	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) -
 		uint32(len(valueByteSizeBytes))
@@ -187,14 +189,11 @@ func FromBytes[T any](data []byte) (T, error) {
 
 func ToBytes[T any](value T) []byte {
 	buf := new(bytes.Buffer)
-	//fmt.Println("Tobytes: ", value)
 	err := binary.Write(buf, binary.LittleEndian, value)
 	if err != nil {
 		valueType := reflect.TypeOf(value)
 		panic(fmt.Sprintf("cannot convert type [%s] to bytes: %v", valueType, err))
 	}
-
-	//fmt.Println("buf: ", buf.Bytes())
 	return buf.Bytes()
 }
 
@@ -202,18 +201,15 @@ func (s *Store[T]) Get(key string) (T, error) {
 	var nothing T
 
 	valueSizeOffset, ok := s.offsetMap[key]
-	//valueSizeOffset = 0x26
 	if !ok {
 		return nothing, fmt.Errorf("key [%s] not found", key)
 	}
-	//fmt.Printf("valueSizeOffset=%d (%X)\n", valueSizeOffset, valueSizeOffset)
 
 	// Copy value length
 	var valueBytesSize ValueByteSize
 	valueBytesSize = ValueByteSize(unsafe.Sizeof(valueBytesSize))
 	valueByteSizeBytes := make([]byte, valueBytesSize)
 	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
-	//fmt.Println("valueByteSizeBytes=", hex.EncodeToString(valueByteSizeBytes))
 	valueSize, err := FromBytes[uint16](valueByteSizeBytes)
 	if err != nil {
 		return nothing, fmt.Errorf("unable to read value bytes size from binary")
@@ -227,13 +223,12 @@ func (s *Store[T]) Get(key string) (T, error) {
 	valueSizeOffset += uint32(valueBytesSize)
 	valueBytes := make([]byte, valueSize)
 	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
-	//fmt.Println("valueBytes=", valueSize)
 
 	value, err := FromBytes[T](valueBytes)
 	if err != nil {
 		return nothing, fmt.Errorf("unable to read value bytes from binary")
 	}
-	fmt.Println("value=", value)
+
 	return any(value).(T), nil
 }
 
