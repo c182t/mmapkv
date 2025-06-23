@@ -78,12 +78,8 @@ func writeHeader(header *Header, data []byte) {
 func (s *Store[T]) setValue(key string, value any) error {
 	var fixedSizeValue any
 	var keyBytes []byte
-	var keyBytesLen int
 
 	keyBytes = []byte(key)
-	keyBytesLen = len(keyBytes)
-
-	fmt.Println(keyBytesLen)
 
 	var valueBytes []byte
 	var err error
