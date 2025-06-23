@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"reflect"
@@ -11,14 +12,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type OffsetMap map[string]int
+type OffsetMap map[string]uint32
+type KeyByteSize uint16
+type ValueByteSize uint16
 
 type Header struct {
 	version    uint8
 	lastOffset uint32
+	valueType  uint8
 }
 
-var headerSize uint16 = 5
+var headerSize uint16 = 6
 
 type Store[T any] struct {
 	header     Header
@@ -54,16 +58,19 @@ func NewStore[T any]() (*Store[T], error) {
 		return nil, fmt.Errorf("failed to mmap db log file [%s]: %v", dbLogFileName, err)
 	}
 
-	header := Header{1, uint32(headerSize)}
+	header := Header{1, uint32(headerSize), 1}
 	writeHeader(&header, data)
+	store := Store[T]{header, headerSize, data, OffsetMap{}}
 
-	return &Store[T]{header, headerSize, data, OffsetMap{}}, nil
+	store.syncData()
+
+	return &store, nil
 }
 
 func writeHeader(header *Header, data []byte) {
-	headerBytes := append(ToBytes(header.version), ToBytes(header.lastOffset)...)
+	headerBytes := append(append(ToBytes(header.version), ToBytes(header.lastOffset)...), ToBytes(header.valueType)...)
 	if len(headerBytes) != int(headerSize) {
-		panic(fmt.Sprintf("len(headerBytes) != 16; len(headerBytes) = %d", len(headerBytes)))
+		panic(fmt.Sprintf("len(headerBytes) != int(headerSize); len(headerBytes)=%d; int(headerSize)=%d", int(headerSize), len(headerBytes)))
 	}
 	copy(data[:16], headerBytes)
 }
@@ -92,35 +99,40 @@ func (s *Store[T]) Set(key string, value T) error {
 		return fmt.Errorf("unsupported value type: %s", v)
 	}
 
-	nextValueOffset := uint16(len(keyBytes))
-	nextKeyOffset := uint16(len(valueBytes))
-	fmt.Println("nextValueOffset=", nextValueOffset)
+	keyByteSize := KeyByteSize(len(keyBytes))
+	valueByteSize := ValueByteSize(len(valueBytes))
 
-	appendBytesSize := uint32(unsafe.Sizeof(nextValueOffset)) +
-		uint32(len(keyBytes)) +
-		uint32(unsafe.Sizeof(nextKeyOffset)) +
-		uint32(len(valueBytes))
+	appendBytesSize := uint32(unsafe.Sizeof(keyByteSize)) +
+		uint32(keyByteSize) +
+		uint32(unsafe.Sizeof(valueByteSize)) +
+		uint32(valueByteSize)
 
-	valueOffsetBytes := ToBytes(nextValueOffset)
-	fmt.Println("valueOffsetBytes=", valueOffsetBytes)
-	keyOffsetBytes := ToBytes(nextKeyOffset)
-	fmt.Println("keyOffsetBytes=", keyOffsetBytes)
+	keyByteSizeBytes := ToBytes(keyByteSize)
+	valyeByteSizeBytes := ToBytes(valueByteSize)
 
-	valuePairBytes := append(append(append(valueOffsetBytes, keyBytes...),
-		keyOffsetBytes...), valueBytes...)
+	valuePairBytes := append(append(append(keyByteSizeBytes, keyBytes...),
+		valyeByteSizeBytes...), valueBytes...)
 
-	copy(s.data[s.header.lastOffset:s.header.lastOffset+uint32(appendBytesSize)], valuePairBytes)
+	keyValuePairStartOffset := s.header.lastOffset + uint32(unsafe.Sizeof(keyByteSize))
+	keyValuePairEndOffset := keyValuePairStartOffset + uint32(appendBytesSize)
+	copy(s.data[keyValuePairStartOffset:keyValuePairEndOffset], valuePairBytes)
+
 	s.header.lastOffset += appendBytesSize
-	writeHeader(&s.header, s.data)
 
-	err = unix.Msync(s.data, unix.MS_SYNC)
-	if err != nil {
-		return fmt.Errorf("failed to sync data to db log: %v", err)
-	}
+	writeHeader(&s.header, s.data)
+	s.syncData()
 
 	s.header.lastOffset = s.header.lastOffset + appendBytesSize
+	s.offsetMap[key] = s.header.lastOffset - uint32(valueByteSize) - uint32(unsafe.Sizeof(valueByteSize))
 
 	return nil
+}
+
+func (s *Store[T]) syncData() {
+	err := unix.Msync(s.data, unix.MS_SYNC)
+	if err != nil {
+		panic(fmt.Errorf("failed to sync data to db log: %v", err))
+	}
 }
 
 func ToFixedSize[T any](value T) (any, error) {
@@ -153,6 +165,28 @@ func ToBytes[T any](value T) []byte {
 
 func (s *Store[T]) Get(key string) (T, error) {
 	var nothing T
+
+	valueSizeOffset, ok := s.offsetMap[key]
+	//valueSizeOffset = 0x26
+	if !ok {
+		return nothing, fmt.Errorf("key [%s] not found", key)
+	}
+	fmt.Printf("valueSizeOffset=%d (%X)\n", valueSizeOffset, valueSizeOffset)
+
+	//var valueByteSize ValueByteSize
+	// uint32(unsafe.Sizeof(valueByteSize))
+	valueByteSizeBytes := make([]byte, 10)
+	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+10])
+	fmt.Println("valueByteSizeBytes=", hex.EncodeToString(valueByteSizeBytes))
+
+	/*
+		var nextKeyOffset NextKeyOffset
+		nextKeyOffsetSize := uint32(unsafe.Sizeof(nextKeyOffset))
+		byteValueCopy := make([]byte, valueOffset+nextKeyOffsetSize+uint32(nextKeyOffset)-valueOffset+nextKeyOffsetSize:valueOffset)
+		copy(byteValueCopy, s.data[valueOffset+nextKeyOffsetSize:valueOffset+nextKeyOffsetSize+uint32(nextKeyOffset)])
+		fmt.Println("byteValueCopy=", byteValueCopy)
+	*/
+
 	return nothing, nil
 }
 
