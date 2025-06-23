@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -102,28 +101,35 @@ func (s *Store[T]) Set(key string, value T) error {
 	keyByteSize := KeyByteSize(len(keyBytes))
 	valueByteSize := ValueByteSize(len(valueBytes))
 
-	appendBytesSize := uint32(unsafe.Sizeof(keyByteSize)) +
-		uint32(keyByteSize) +
-		uint32(unsafe.Sizeof(valueByteSize)) +
-		uint32(valueByteSize)
-
 	keyByteSizeBytes := ToBytes(keyByteSize)
-	valyeByteSizeBytes := ToBytes(valueByteSize)
+	valueByteSizeBytes := ToBytes(valueByteSize)
 
-	valuePairBytes := append(append(append(keyByteSizeBytes, keyBytes...),
-		valyeByteSizeBytes...), valueBytes...)
+	// Copy key bytes length
+	startOffset := s.header.lastOffset
+	endOffset := startOffset + uint32(len(keyByteSizeBytes))
+	copy(s.data[startOffset:endOffset], keyByteSizeBytes)
 
-	keyValuePairStartOffset := s.header.lastOffset + uint32(unsafe.Sizeof(keyByteSize))
-	keyValuePairEndOffset := keyValuePairStartOffset + uint32(appendBytesSize)
-	copy(s.data[keyValuePairStartOffset:keyValuePairEndOffset], valuePairBytes)
+	// Copy key bytes
+	startOffset = endOffset
+	endOffset += uint32(len(keyBytes))
+	copy(s.data[startOffset:endOffset], keyBytes)
 
-	s.header.lastOffset += appendBytesSize
+	// Copy value bytes length
+	startOffset = endOffset
+	endOffset += uint32(len(valueByteSizeBytes))
+	copy(s.data[startOffset:endOffset], valueByteSizeBytes)
+
+	// Copy value bytes
+	startOffset = endOffset
+	endOffset += uint32(len(valueBytes))
+	copy(s.data[startOffset:endOffset], valueBytes)
+
+	s.header.lastOffset = endOffset
 
 	writeHeader(&s.header, s.data)
 	s.syncData()
 
-	s.header.lastOffset = s.header.lastOffset + appendBytesSize
-	s.offsetMap[key] = s.header.lastOffset - uint32(valueByteSize) - uint32(unsafe.Sizeof(valueByteSize))
+	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) - uint32(len(valueByteSizeBytes))
 
 	return nil
 }
