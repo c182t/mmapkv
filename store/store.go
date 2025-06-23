@@ -14,6 +14,7 @@ import (
 type OffsetMap map[string]uint32
 type KeyByteSize uint16
 type ValueByteSize uint16
+type Tombstone struct{}
 
 type Header struct {
 	version    uint8
@@ -74,7 +75,7 @@ func writeHeader(header *Header, data []byte) {
 	copy(data[:16], headerBytes)
 }
 
-func (s *Store[T]) Set(key string, value T) error {
+func (s *Store[T]) setValue(key string, value any) error {
 	var fixedSizeValue any
 	var keyBytes []byte
 	var keyBytesLen int
@@ -94,6 +95,8 @@ func (s *Store[T]) Set(key string, value T) error {
 			return fmt.Errorf("unable to convert value to fixed-size type: %v", err)
 		}
 		valueBytes = ToBytes(fixedSizeValue)
+	case Tombstone:
+		valueBytes = nil
 	default:
 		return fmt.Errorf("unsupported value type: %s", v)
 	}
@@ -132,6 +135,9 @@ func (s *Store[T]) Set(key string, value T) error {
 	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) - uint32(len(valueByteSizeBytes))
 
 	return nil
+}
+func (s *Store[T]) Set(key string, value T) error {
+	return s.setValue(key, value)
 }
 
 func (s *Store[T]) syncData() {
@@ -202,7 +208,10 @@ func (s *Store[T]) Get(key string) (T, error) {
 	if err != nil {
 		return nothing, fmt.Errorf("unable to read value bytes size from binary")
 	}
-	//fmt.Println("valueSize=", valueSize)
+
+	if valueSize == 0 {
+		return nothing, fmt.Errorf("key [%s] doesn't exist", key)
+	}
 
 	// Copy value
 	valueSizeOffset += uint32(valueBytesSize)
@@ -218,7 +227,7 @@ func (s *Store[T]) Get(key string) (T, error) {
 }
 
 func (s *Store[T]) Delete(key string) error {
-	return nil
+	return s.setValue(key, Tombstone{})
 }
 
 func (s *Store[T]) Close() error {

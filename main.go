@@ -35,11 +35,16 @@ func main() {
 	fmt.Printf("Get [key3=%d]\n", val)
 
 	err = store.Delete("key1")
+	if err != nil {
+		fmt.Printf("Delete [key1] error: %v\n", err)
+	}
 	fmt.Printf("Delete [key1]\n")
 
 	val, err = store.Get("key1")
 	if err != nil {
-		fmt.Printf("Get [key1Value] error: %v\n", err)
+		fmt.Printf("Get [key1] error: %v\n", err)
+	} else {
+		fmt.Printf("Get [key1] still exists, but should be deleted (!) [%d]\n", val)
 	}
 
 	store.Close()
