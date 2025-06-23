@@ -9,9 +9,9 @@ func main() {
 	var err error
 	var val int
 
-	var store *mmapkv.Store[int]
+	//var store *mmapkv.Store[int]
 
-	store, err = mmapkv.NewStore[int]()
+	store, err := mmapkv.NewStore[int]("main")
 	if err != nil {
 		panic(err)
 	}
@@ -47,5 +47,5 @@ func main() {
 		fmt.Printf("Get [key1] still exists, but should be deleted (!) [%d]\n", val)
 	}
 
-	store.Close()
+	store.Drop()
 }

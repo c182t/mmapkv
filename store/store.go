@@ -19,26 +19,33 @@ type Tombstone struct{}
 type Header struct {
 	version    uint8
 	lastOffset uint32
-	valueType  uint8
+	valueType  string
 }
-
-var headerSize uint16 = 6
 
 type Store[T any] struct {
-	header     Header
-	headerSize uint16
-	data       []byte
-	offsetMap  OffsetMap
+	header    Header
+	data      []byte
+	offsetMap OffsetMap
+	dbName    string
 }
 
-func NewStore[T any]() (*Store[T], error) {
+func DropStore(dbName string) error {
+	var dbLogFileName = fmt.Sprintf("/tmp/mmapkv.%s.db.bin", dbName)
+	err := os.Remove(dbLogFileName)
+	if err != nil {
+		return fmt.Errorf("unable to remove file: %s", dbLogFileName)
+	}
+	return nil
+}
+
+func NewStore[T any](dbName string) (*Store[T], error) {
 	sysPageSize := os.Getpagesize()
 	dbLogFileSize := 1 << 30
 
 	fmt.Printf("Page size=%v\n", sysPageSize)
 
-	var dbLogFileName = "/tmp/mmapkv.db.bin"
-	f, err := os.OpenFile(dbLogFileName, os.O_RDWR|os.O_CREATE, 0644)
+	var dbLogFileName = fmt.Sprintf("/tmp/mmapkv.%s.db.bin", dbName)
+	f, err := os.OpenFile(dbLogFileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mmapkv db log file [%s]: %v", dbLogFileName, err)
 	}
@@ -58,28 +65,30 @@ func NewStore[T any]() (*Store[T], error) {
 		return nil, fmt.Errorf("failed to mmap db log file [%s]: %v", dbLogFileName, err)
 	}
 
-	header := Header{1, uint32(headerSize), 1}
-	writeHeader(&header, data)
-	store := Store[T]{header, headerSize, data, OffsetMap{}}
+	var nothing T
+	header := Header{1, 0, reflect.TypeOf(nothing).String()}
+	headerLength := writeHeader(&header, data)
+	header.lastOffset = headerLength
+	store := Store[T]{header, data, OffsetMap{}, dbName}
 
 	store.syncData()
 
 	return &store, nil
 }
 
-func writeHeader(header *Header, data []byte) {
-	headerBytes := append(append(ToBytes(header.version), ToBytes(header.lastOffset)...), ToBytes(header.valueType)...)
-	if len(headerBytes) != int(headerSize) {
-		panic(fmt.Sprintf("len(headerBytes) != int(headerSize); len(headerBytes)=%d; int(headerSize)=%d", int(headerSize), len(headerBytes)))
-	}
-	copy(data[:16], headerBytes)
+func writeHeader(header *Header, data []byte) uint32 {
+	headerBytes := append(append(ToBytes(header.version),
+		ToBytes(header.lastOffset)...),
+		[]byte(header.valueType)...)
+
+	copy(data[:len(headerBytes)], headerBytes)
+
+	return uint32(len(headerBytes))
 }
 
 func (s *Store[T]) setValue(key string, value any) error {
 	var fixedSizeValue any
-	var keyBytes []byte
-
-	keyBytes = []byte(key)
+	keyBytes := []byte(key)
 
 	var valueBytes []byte
 	var err error
@@ -91,6 +100,8 @@ func (s *Store[T]) setValue(key string, value any) error {
 			return fmt.Errorf("unable to convert value to fixed-size type: %v", err)
 		}
 		valueBytes = ToBytes(fixedSizeValue)
+	case string:
+		valueBytes = []byte(v)
 	case Tombstone:
 		valueBytes = nil
 	default:
@@ -126,9 +137,10 @@ func (s *Store[T]) setValue(key string, value any) error {
 	s.header.lastOffset = endOffset
 
 	writeHeader(&s.header, s.data)
-	s.syncData()
+	//s.syncData()
 
-	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) - uint32(len(valueByteSizeBytes))
+	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) -
+		uint32(len(valueByteSizeBytes))
 
 	return nil
 }
@@ -165,6 +177,8 @@ func FromBytes[T any](data []byte) (T, error) {
 		return any(uint16(binary.LittleEndian.Uint16(data))).(T), nil
 	case int:
 		return any(int(int64(binary.LittleEndian.Uint64(data)))).(T), nil
+	case string:
+		return any(string(data)).(T), nil
 	default:
 		return value, fmt.Errorf("unsupported type in FromBytes")
 	}
@@ -214,11 +228,12 @@ func (s *Store[T]) Get(key string) (T, error) {
 	valueBytes := make([]byte, valueSize)
 	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
 	//fmt.Println("valueBytes=", valueSize)
-	value, err := FromBytes[int](valueBytes)
+
+	value, err := FromBytes[T](valueBytes)
 	if err != nil {
 		return nothing, fmt.Errorf("unable to read value bytes from binary")
 	}
-	//fmt.Println("value=", value)
+	fmt.Println("value=", value)
 	return any(value).(T), nil
 }
 
@@ -228,4 +243,20 @@ func (s *Store[T]) Delete(key string) error {
 
 func (s *Store[T]) Close() error {
 	return unix.Munmap(s.data)
+}
+
+func (s *Store[T]) Drop() error {
+	if err := s.Close(); err != nil {
+		return err
+	}
+
+	if err := DropStore(s.dbName); err != nil {
+		return err
+	}
+
+	s.offsetMap = nil
+	s.header = Header{}
+	s.data = nil
+
+	return nil
 }
