@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
+	"unsafe"
 
 	"os"
 
@@ -11,8 +14,9 @@ import (
 type OffsetMap map[string]int
 
 type Store[T any] struct {
-	data      []byte
-	offsetMap OffsetMap
+	data       []byte
+	offsetMap  OffsetMap
+	lastOffset uint32
 }
 
 func NewStore[T any]() (*Store[T], error) {
@@ -42,11 +46,55 @@ func NewStore[T any]() (*Store[T], error) {
 		return nil, fmt.Errorf("failed to mmap db log file [%s]: %v", dbLogFileName, err)
 	}
 
-	return &Store[T]{data, OffsetMap{}}, nil
+	return &Store[T]{data, OffsetMap{}, 0}, nil
 }
 
 func (s *Store[T]) Set(key string, value T) error {
+	var keyBytes []byte
+	var keyBytesLen int
+
+	keyBytes = []byte(key)
+	keyBytesLen = len(keyBytes)
+
+	fmt.Println(keyBytesLen)
+
+	var valueBytes []byte
+	switch v := any(value).(type) {
+	case int:
+		valueBytes = IntToBytes(v)
+	default:
+		return fmt.Errorf("Unsupported value type: %s", v)
+	}
+
+	nextValueOffset := len(keyBytes)
+	nextKeyOffset := len(valueBytes)
+
+	appendBytesSize := int(unsafe.Sizeof(nextValueOffset)) +
+		len(keyBytes) +
+		int(unsafe.Sizeof(nextKeyOffset)) +
+		len(valueBytes)
+
+	//valuePairBytes := make([]byte, appendBytesSize)
+	valueOffsetBytes := IntToBytes(nextValueOffset)
+	keyOffsetBytes := IntToBytes(nextKeyOffset)
+
+	valuePairBytes := append(append(append(valueOffsetBytes, keyBytes...),
+		keyOffsetBytes...), valueBytes...)
+
+	copy(s.data[s.lastOffset:appendBytesSize], valuePairBytes)
+
+	err := unix.Msync(s.data, unix.MS_SYNC)
+	if err != nil {
+		return fmt.Errorf("failed to sync data to db log: %v", err)
+	}
+
 	return nil
+}
+
+func IntToBytes(intValue int) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, int64(intValue))
+	return buf.Bytes()
 }
 
 func (s *Store[T]) Get(key string) (T, error) {
