@@ -3,10 +3,10 @@ package store
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"reflect"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -156,16 +156,29 @@ func ToFixedSize[T any](value T) (any, error) {
 	}
 }
 
+func FromBytes[T any](data []byte) (T, error) {
+	var value T
+	switch any(value).(type) {
+	case uint16:
+		return any(uint16(binary.LittleEndian.Uint16(data))).(T), nil
+	case int:
+		return any(int(int64(binary.LittleEndian.Uint64(data)))).(T), nil
+	default:
+		return value, fmt.Errorf("unsupported type in FromBytes")
+	}
+
+}
+
 func ToBytes[T any](value T) []byte {
 	buf := new(bytes.Buffer)
-	fmt.Println("Tobytes: ", value)
+	//fmt.Println("Tobytes: ", value)
 	err := binary.Write(buf, binary.LittleEndian, value)
 	if err != nil {
 		valueType := reflect.TypeOf(value)
 		panic(fmt.Sprintf("cannot convert type [%s] to bytes: %v", valueType, err))
 	}
 
-	fmt.Println("buf: ", buf.Bytes())
+	//fmt.Println("buf: ", buf.Bytes())
 	return buf.Bytes()
 }
 
@@ -177,23 +190,31 @@ func (s *Store[T]) Get(key string) (T, error) {
 	if !ok {
 		return nothing, fmt.Errorf("key [%s] not found", key)
 	}
-	fmt.Printf("valueSizeOffset=%d (%X)\n", valueSizeOffset, valueSizeOffset)
+	//fmt.Printf("valueSizeOffset=%d (%X)\n", valueSizeOffset, valueSizeOffset)
 
-	//var valueByteSize ValueByteSize
-	// uint32(unsafe.Sizeof(valueByteSize))
-	valueByteSizeBytes := make([]byte, 10)
-	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+10])
-	fmt.Println("valueByteSizeBytes=", hex.EncodeToString(valueByteSizeBytes))
+	// Copy value length
+	var valueBytesSize ValueByteSize
+	valueBytesSize = ValueByteSize(unsafe.Sizeof(valueBytesSize))
+	valueByteSizeBytes := make([]byte, valueBytesSize)
+	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
+	//fmt.Println("valueByteSizeBytes=", hex.EncodeToString(valueByteSizeBytes))
+	valueSize, err := FromBytes[uint16](valueByteSizeBytes)
+	if err != nil {
+		return nothing, fmt.Errorf("unable to read value bytes size from binary")
+	}
+	//fmt.Println("valueSize=", valueSize)
 
-	/*
-		var nextKeyOffset NextKeyOffset
-		nextKeyOffsetSize := uint32(unsafe.Sizeof(nextKeyOffset))
-		byteValueCopy := make([]byte, valueOffset+nextKeyOffsetSize+uint32(nextKeyOffset)-valueOffset+nextKeyOffsetSize:valueOffset)
-		copy(byteValueCopy, s.data[valueOffset+nextKeyOffsetSize:valueOffset+nextKeyOffsetSize+uint32(nextKeyOffset)])
-		fmt.Println("byteValueCopy=", byteValueCopy)
-	*/
-
-	return nothing, nil
+	// Copy value
+	valueSizeOffset += uint32(valueBytesSize)
+	valueBytes := make([]byte, valueSize)
+	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
+	//fmt.Println("valueBytes=", valueSize)
+	value, err := FromBytes[int](valueBytes)
+	if err != nil {
+		return nothing, fmt.Errorf("unable to read value bytes from binary")
+	}
+	//fmt.Println("value=", value)
+	return any(value).(T), nil
 }
 
 func (s *Store[T]) Delete(key string) error {
