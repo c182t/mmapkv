@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"unsafe"
@@ -79,6 +80,69 @@ func NewStore[T any](dbName string) (*Store[T], error) {
 	return &store, nil
 }
 
+func (s *Store[T]) Get(key string) (T, error) {
+	var nothing T
+
+	valueSizeOffset, ok := s.offsetMap[key]
+	if !ok {
+		return nothing, fmt.Errorf("key [%s] not found", key)
+	}
+
+	// Copy value length
+	var valueBytesSize ValueByteSize
+	valueBytesSize = ValueByteSize(unsafe.Sizeof(valueBytesSize))
+	valueByteSizeBytes := make([]byte, valueBytesSize)
+	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
+	valueSize, err := FromBytes[uint16](valueByteSizeBytes)
+	if err != nil {
+		return nothing, fmt.Errorf("unable to read value bytes size from binary: %v", err)
+	}
+
+	if valueSize == 0 {
+		return nothing, fmt.Errorf("key [%s] doesn't exist", key)
+	}
+
+	// Copy value
+	valueSizeOffset += uint32(valueBytesSize)
+	valueBytes := make([]byte, valueSize)
+	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
+
+	value, err := FromBytes[T](valueBytes)
+	if err != nil {
+		return nothing, fmt.Errorf("unable to read value bytes from binary: %v", err)
+	}
+
+	return any(value).(T), nil
+}
+
+func (s *Store[T]) Set(key string, value T) error {
+	return s.setValue(key, value)
+}
+
+func (s *Store[T]) Delete(key string) error {
+	return s.setValue(key, Tombstone{})
+}
+
+func (s *Store[T]) Close() error {
+	return unix.Munmap(s.data)
+}
+
+func (s *Store[T]) Drop() error {
+	if err := s.Close(); err != nil {
+		return err
+	}
+
+	if err := DropStore(s.dbName); err != nil {
+		return err
+	}
+
+	s.offsetMap = nil
+	s.header = Header{}
+	s.data = nil
+
+	return nil
+}
+
 func writeHeader(header *Header, data []byte) uint32 {
 	headerBytes := append(append(ToBytes(header.version),
 		ToBytes(header.lastOffset)...),
@@ -103,6 +167,8 @@ func (s *Store[T]) setValue(key string, value any) error {
 			return fmt.Errorf("unable to convert value to fixed-size type: %v", err)
 		}
 		valueBytes = ToBytes(fixedSizeValue)
+	case float32, float64:
+		valueBytes = ToBytes(v)
 	case string:
 		valueBytes = []byte(v)
 	case Tombstone:
@@ -146,9 +212,6 @@ func (s *Store[T]) setValue(key string, value any) error {
 
 	return nil
 }
-func (s *Store[T]) Set(key string, value T) error {
-	return s.setValue(key, value)
-}
 
 func (s *Store[T]) syncData() {
 	err := unix.Msync(s.data, unix.MS_SYNC)
@@ -179,6 +242,12 @@ func FromBytes[T any](data []byte) (T, error) {
 		return any(uint16(binary.LittleEndian.Uint16(data))).(T), nil
 	case int:
 		return any(int(int64(binary.LittleEndian.Uint64(data)))).(T), nil
+	case float32:
+		float32Bits := binary.LittleEndian.Uint32(data)
+		return any(math.Float32frombits(float32Bits)).(T), nil
+	case float64:
+		float64Bits := binary.LittleEndian.Uint64(data)
+		return any(math.Float64frombits(float64Bits)).(T), nil
 	case string:
 		return any(string(data)).(T), nil
 	default:
@@ -195,63 +264,4 @@ func ToBytes[T any](value T) []byte {
 		panic(fmt.Sprintf("cannot convert type [%s] to bytes: %v", valueType, err))
 	}
 	return buf.Bytes()
-}
-
-func (s *Store[T]) Get(key string) (T, error) {
-	var nothing T
-
-	valueSizeOffset, ok := s.offsetMap[key]
-	if !ok {
-		return nothing, fmt.Errorf("key [%s] not found", key)
-	}
-
-	// Copy value length
-	var valueBytesSize ValueByteSize
-	valueBytesSize = ValueByteSize(unsafe.Sizeof(valueBytesSize))
-	valueByteSizeBytes := make([]byte, valueBytesSize)
-	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
-	valueSize, err := FromBytes[uint16](valueByteSizeBytes)
-	if err != nil {
-		return nothing, fmt.Errorf("unable to read value bytes size from binary")
-	}
-
-	if valueSize == 0 {
-		return nothing, fmt.Errorf("key [%s] doesn't exist", key)
-	}
-
-	// Copy value
-	valueSizeOffset += uint32(valueBytesSize)
-	valueBytes := make([]byte, valueSize)
-	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
-
-	value, err := FromBytes[T](valueBytes)
-	if err != nil {
-		return nothing, fmt.Errorf("unable to read value bytes from binary")
-	}
-
-	return any(value).(T), nil
-}
-
-func (s *Store[T]) Delete(key string) error {
-	return s.setValue(key, Tombstone{})
-}
-
-func (s *Store[T]) Close() error {
-	return unix.Munmap(s.data)
-}
-
-func (s *Store[T]) Drop() error {
-	if err := s.Close(); err != nil {
-		return err
-	}
-
-	if err := DropStore(s.dbName); err != nil {
-		return err
-	}
-
-	s.offsetMap = nil
-	s.header = Header{}
-	s.data = nil
-
-	return nil
 }

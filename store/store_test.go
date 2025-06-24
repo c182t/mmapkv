@@ -40,6 +40,74 @@ func TestSetGet(t *testing.T) {
 	}
 }
 
+func TestSetGetFloat32(t *testing.T) {
+	tests := []struct {
+		key      string
+		value    float32
+		expected float32
+	}{
+		{"key1", 1.111, 1.111},
+		{"key2", 2.222, 2.222},
+		{"key3", 3.333, 3.333},
+	}
+
+	DropStore("TestSetGetFloat32")
+
+	store, err := NewStore[float32]("TestSetGetFloat32")
+	if err != nil {
+		panic(err)
+	}
+	defer store.Close()
+
+	for _, test := range tests {
+		err := store.Set(test.key, test.value)
+		if err != nil {
+			t.Errorf("store.Set(%s, %.2f) failed: %v", test.key, test.value, err)
+		}
+		result, err := store.Get(test.key)
+		if err != nil {
+			t.Errorf("store.Get(%s) failed: %v", test.key, err)
+		}
+		if result != test.expected {
+			t.Errorf("store.Get(%s) failed: %.2f != %.2f", test.key, result, test.expected)
+		}
+	}
+}
+
+func TestSetGetFloat64(t *testing.T) {
+	tests := []struct {
+		key      string
+		value    float64
+		expected float64
+	}{
+		{"key1", (1 << 24) + 1.000001, (1 << 24) + 1.000001},
+		{"key2", (1 << 24) + 2.000002, (1 << 24) + 2.000002},
+		{"key3", (1 << 24) + 3.000003, (1 << 24) + 3.000003},
+	}
+
+	DropStore("TestSetGetFloat64")
+
+	store, err := NewStore[float64]("TestSetGetFloat64")
+	if err != nil {
+		panic(err)
+	}
+	defer store.Close()
+
+	for _, test := range tests {
+		err := store.Set(test.key, test.value)
+		if err != nil {
+			t.Errorf("store.Set(%s, %f) failed: %v", test.key, test.value, err)
+		}
+		result, err := store.Get(test.key)
+		if err != nil {
+			t.Errorf("store.Get(%s) failed: %v", test.key, err)
+		}
+		if result != test.expected {
+			t.Errorf("store.Get(%s) failed: %f != %f", test.key, result, test.expected)
+		}
+	}
+}
+
 func TestSetGetString(t *testing.T) {
 	tests := []struct {
 		key      string
