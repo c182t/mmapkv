@@ -193,7 +193,7 @@ func TestLargeSetGet(t *testing.T) {
 	tests := []struct {
 		keyPrefix string
 		maxValue  int
-	}{{"key", 100000}}
+	}{{"key", 10000000}}
 
 	DropStore("TestLargeSetGet")
 
@@ -214,4 +214,5 @@ func TestLargeSetGet(t *testing.T) {
 	}
 	duration := time.Since(startTime)
 	fmt.Printf("TestLargeSetGet Duration: %v", duration)
+	//xxd -s 1988850 -l 112 /tmp/mmapkv.TestLargeSetGet.db.bin
 }

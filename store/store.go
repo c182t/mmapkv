@@ -2,11 +2,14 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
 	"reflect"
+	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -23,11 +26,18 @@ type Header struct {
 	valueType  string
 }
 
+type StoreSync struct {
+	mu     *sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 type Store[T any] struct {
 	header    Header
 	data      []byte
 	offsetMap OffsetMap
 	dbName    string
+	StoreSync
 }
 
 func DropStore(dbName string) error {
@@ -37,6 +47,26 @@ func DropStore(dbName string) error {
 		return fmt.Errorf("unable to remove file: %s", dbLogFileName)
 	}
 	return nil
+}
+
+func (store *Store[T]) syncDataPeriodic() {
+	fmt.Printf("Starting periodic data sync [2s interval]\n")
+	ticker := time.NewTicker(2 * time.Second)
+	defer func() {
+		fmt.Printf("Stopping periodic data sync [2s interval]\n")
+		ticker.Stop()
+	}()
+
+	for range ticker.C {
+		select {
+		case <-store.ctx.Done():
+			fmt.Printf("Periodic data sync received cancel signal!\n")
+			return
+		default:
+			fmt.Printf("[msync]\n")
+			store.syncData()
+		}
+	}
 }
 
 func NewStore[T any](dbName string) (*Store[T], error) {
@@ -71,11 +101,18 @@ func NewStore[T any](dbName string) (*Store[T], error) {
 
 	var nothing T
 	header := Header{1, 0, reflect.TypeOf(nothing).String()}
-	headerLength := writeHeader(&header, data)
-	header.lastOffset = headerLength
-	store := Store[T]{header, data, OffsetMap{}, dbName}
 
+	dataMutex := sync.Mutex{}
+	ctx, cancel := context.WithCancel(context.Background())
+	storeSync := StoreSync{&dataMutex, ctx, cancel}
+
+	store := Store[T]{header, data, OffsetMap{}, dbName, storeSync}
+
+	headerSize := store.writeHeader()
+	store.header.lastOffset = headerSize
 	store.syncData()
+
+	go store.syncDataPeriodic()
 
 	return &store, nil
 }
@@ -92,7 +129,12 @@ func (s *Store[T]) Get(key string) (T, error) {
 	var valueBytesSize ValueByteSize
 	valueBytesSize = ValueByteSize(unsafe.Sizeof(valueBytesSize))
 	valueByteSizeBytes := make([]byte, valueBytesSize)
+
+	s.mu.Lock()
+	fmt.Printf("valueSizeOffset=%d; valueBytesSize=%d", valueSizeOffset, valueBytesSize)
 	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
+	s.mu.Unlock()
+
 	valueSize, err := FromBytes[uint16](valueByteSizeBytes)
 	if err != nil {
 		return nothing, fmt.Errorf("unable to read value bytes size from binary: %v", err)
@@ -105,7 +147,10 @@ func (s *Store[T]) Get(key string) (T, error) {
 	// Copy value
 	valueSizeOffset += uint32(valueBytesSize)
 	valueBytes := make([]byte, valueSize)
+
+	s.mu.Lock()
 	copy(valueBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueSize)])
+	s.mu.Unlock()
 
 	value, err := FromBytes[T](valueBytes)
 	if err != nil {
@@ -124,6 +169,7 @@ func (s *Store[T]) Delete(key string) error {
 }
 
 func (s *Store[T]) Close() error {
+	s.cancel()
 	return unix.Munmap(s.data)
 }
 
@@ -143,13 +189,12 @@ func (s *Store[T]) Drop() error {
 	return nil
 }
 
-func writeHeader(header *Header, data []byte) uint32 {
-	headerBytes := append(append(ToBytes(header.version),
-		ToBytes(header.lastOffset)...),
-		[]byte(header.valueType)...)
+func (s *Store[T]) writeHeader() uint32 {
+	headerBytes := append(append(ToBytes(s.header.version),
+		ToBytes(s.header.lastOffset)...),
+		[]byte(s.header.valueType)...)
 
-	copy(data[:len(headerBytes)], headerBytes)
-
+	s.copyData(0, uint32(len(headerBytes)), headerBytes)
 	return uint32(len(headerBytes))
 }
 
@@ -186,31 +231,36 @@ func (s *Store[T]) setValue(key string, value any) error {
 	// Copy key bytes length
 	startOffset := s.header.lastOffset
 	endOffset := startOffset + uint32(len(keyByteSizeBytes))
-	copy(s.data[startOffset:endOffset], keyByteSizeBytes)
+	s.copyData(startOffset, endOffset, keyByteSizeBytes)
 
 	// Copy key bytes
 	startOffset = endOffset
 	endOffset += uint32(len(keyBytes))
-	copy(s.data[startOffset:endOffset], keyBytes)
+	s.copyData(startOffset, endOffset, keyBytes)
 
 	// Copy value bytes length
 	startOffset = endOffset
 	endOffset += uint32(len(valueByteSizeBytes))
-	copy(s.data[startOffset:endOffset], valueByteSizeBytes)
+	s.copyData(startOffset, endOffset, valueByteSizeBytes)
 
 	// Copy value bytes
 	startOffset = endOffset
 	endOffset += uint32(len(valueBytes))
-	copy(s.data[startOffset:endOffset], valueBytes)
-
+	s.copyData(startOffset, endOffset, valueBytes)
 	s.header.lastOffset = endOffset
 
-	writeHeader(&s.header, s.data)
+	s.writeHeader()
 
 	s.offsetMap[key] = s.header.lastOffset - uint32(len(valueBytes)) -
 		uint32(len(valueByteSizeBytes))
 
 	return nil
+}
+
+func (s *Store[T]) copyData(startOffset uint32, endOffset uint32, src []byte) {
+	s.mu.Lock()
+	copy(s.data[startOffset:endOffset], src)
+	s.mu.Unlock()
 }
 
 func (s *Store[T]) syncData() {
