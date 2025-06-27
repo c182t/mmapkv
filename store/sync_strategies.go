@@ -22,6 +22,18 @@ func (nss *NoSyncStrategy) OnStoreOpened(syncable Syncable)      { return }
 func (nss *NoSyncStrategy) OnDataCopyFinished(syncable Syncable) { return }
 func (nss *NoSyncStrategy) OnCloseStore(syncable Syncable)       { return }
 
+type SyncOnEachUpdateStrategy struct{}
+
+func (nss *SyncOnEachUpdateStrategy) OnStoreOpened(syncable Syncable)      { return }
+func (nss *SyncOnEachUpdateStrategy) OnDataCopyFinished(syncable Syncable) { syncable.Sync() }
+func (nss *SyncOnEachUpdateStrategy) OnCloseStore(syncable Syncable)       { syncable.Sync() }
+
+type SyncOnTransactionStrategy struct{}
+
+func (nss *SyncOnTransactionStrategy) OnStoreOpened(syncable Syncable)      { return }
+func (nss *SyncOnTransactionStrategy) OnDataCopyFinished(syncable Syncable) { return }
+func (nss *SyncOnTransactionStrategy) OnCloseStore(syncable Syncable)       { syncable.Sync() }
+
 type PeriodicSyncStrategy struct {
 	delay  time.Duration
 	ctx    context.Context
@@ -37,10 +49,15 @@ func (pss *PeriodicSyncStrategy) OnStoreOpened(syncable Syncable) {
 	go pss.syncDataPeriodic(syncable)
 }
 
+func (nss *PeriodicSyncStrategy) OnTransactionStart(syncable Syncable) { return }
+
 func (pss *PeriodicSyncStrategy) OnDataCopyFinished(syncable Syncable) { return }
+
+func (nss *PeriodicSyncStrategy) OnTransactionEnd(syncable Syncable) { return }
 
 func (pss *PeriodicSyncStrategy) OnCloseStore(syncable Syncable) {
 	pss.cancel()
+	syncable.Sync()
 }
 
 func (pss *PeriodicSyncStrategy) syncDataPeriodic(syncable Syncable) {

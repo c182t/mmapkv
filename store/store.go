@@ -33,6 +33,37 @@ type Store[T any] struct {
 	syncStrategy StoreSyncStrategy
 }
 
+type StoreTx[T any] struct {
+	store      *Store[T]
+	lastOffset uint32
+	buffer     map[string]*T
+}
+
+func (store *Store[T]) Transaction(fn func(tx *StoreTx[T])) error {
+	store.mu.Lock()
+	tx := StoreTx[T]{store, store.header.lastOffset, make(map[string]*T)}
+	store.mu.Unlock()
+
+	fn(&tx)
+
+	store.mu.Lock()
+	if store.header.lastOffset != tx.lastOffset {
+		return fmt.Errorf("unable to commit transaction; store was modified before transaction could be committed.")
+	}
+
+	for k, v := range tx.buffer {
+		if v == nil {
+			store.Delete(k)
+		} else {
+			store.Set(k, *v)
+		}
+	}
+
+	store.mu.Unlock()
+
+	return nil
+}
+
 func DropStore(dbName string) error {
 	var dbLogFileName = fmt.Sprintf("/tmp/mmapkv.%s.db.bin", dbName)
 	err := os.Remove(dbLogFileName)
@@ -84,6 +115,10 @@ func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy) (*Store[T], 
 	syncStrategy.OnStoreOpened(&store)
 
 	return &store, nil
+}
+
+func (s *Store[T]) Transaction(fn func()) {
+
 }
 
 func (s *Store[T]) Get(key string) (T, error) {

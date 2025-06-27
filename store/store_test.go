@@ -198,6 +198,7 @@ func TestLargeSetGet(t *testing.T) {
 	DropStore("TestLargeSetGet")
 
 	store, err := NewStore[int]("TestLargeSetGet", NewPeriodicSyncStrategy(1*time.Second))
+	//store, err := NewStore[int]("TestLargeSetGet", &SyncOnEachUpdateStrategy{})
 	if err != nil {
 		panic(err)
 	}
