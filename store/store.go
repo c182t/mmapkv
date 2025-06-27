@@ -2,14 +2,12 @@ package store
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
 	"reflect"
 	"sync"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -20,72 +18,19 @@ type KeyByteSize uint16
 type ValueByteSize uint16
 type Tombstone struct{}
 
-type StoreSyncStrategy[T any] interface {
-	OnStoreOpened(store Store[T])
-	OnDataCopyFinished(store Store[T])
-	OnCloseStore(store Store[T])
-}
-
-type NoSyncStrategy[T any] struct{}
-
-func (nss *NoSyncStrategy[T]) OnStoreOpened(store Store[T])      { return }
-func (nss *NoSyncStrategy[T]) OnDataCopyFinished(store Store[T]) { return }
-func (nss *NoSyncStrategy[T]) OnCloseStore(store Store[T])       { return }
-
-type PeriodicSyncStrategy[T any] struct {
-	delay time.Duration
-}
-
-func (pss *PeriodicSyncStrategy[T]) OnStoreOpened(store Store[T]) {
-	go store.syncDataPeriodic(pss.delay)
-}
-
-func (pss *PeriodicSyncStrategy[T]) OnDataCopyFinished(store Store[T]) { return }
-
-func (pss *PeriodicSyncStrategy[T]) OnCloseStore(store Store[T]) {
-	store.cancel()
-}
-
-func (store *Store[T]) syncDataPeriodic(delay time.Duration) {
-	fmt.Printf("Starting periodic data sync [%v interval]\n", delay)
-	ticker := time.NewTicker(delay)
-	defer func() {
-		fmt.Printf("Stopping periodic data sync [%v interval]\n", delay)
-		ticker.Stop()
-	}()
-
-	for range ticker.C {
-		select {
-		case <-store.ctx.Done():
-			fmt.Printf("Periodic data sync received cancel signal (performing final sync)\n")
-			store.syncData()
-			return
-		default:
-			fmt.Printf("[msync]\n")
-			store.syncData()
-		}
-	}
-}
-
 type Header struct {
 	version    uint8
 	lastOffset uint32
 	valueType  string
 }
 
-type StoreSync struct {
-	mu     *sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
 type Store[T any] struct {
-	header    Header
-	data      []byte
-	offsetMap OffsetMap
-	dbName    string
-	StoreSync
-	syncStrategy StoreSyncStrategy[T]
+	header       Header
+	data         []byte
+	offsetMap    OffsetMap
+	dbName       string
+	mu           *sync.Mutex
+	syncStrategy StoreSyncStrategy
 }
 
 func DropStore(dbName string) error {
@@ -97,7 +42,7 @@ func DropStore(dbName string) error {
 	return nil
 }
 
-func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy[T]) (*Store[T], error) {
+func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy) (*Store[T], error) {
 	sysPageSize := os.Getpagesize()
 	dbLogFileSize := 1 << 30
 
@@ -130,17 +75,13 @@ func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy[T]) (*Store[T
 	var nothing T
 	header := Header{1, 0, reflect.TypeOf(nothing).String()}
 
-	dataMutex := sync.Mutex{}
-	ctx, cancel := context.WithCancel(context.Background())
-	storeSync := StoreSync{&dataMutex, ctx, cancel}
-
-	store := Store[T]{header, data, OffsetMap{}, dbName, storeSync, syncStrategy}
+	store := Store[T]{header, data, OffsetMap{}, dbName, &sync.Mutex{}, syncStrategy}
 
 	headerSize := store.writeHeader()
 	store.header.lastOffset = headerSize
-	store.syncData()
+	store.Sync()
 
-	syncStrategy.OnStoreOpened(store)
+	syncStrategy.OnStoreOpened(&store)
 
 	return &store, nil
 }
@@ -197,8 +138,7 @@ func (s *Store[T]) Delete(key string) error {
 }
 
 func (s *Store[T]) Close() error {
-	s.syncStrategy.OnCloseStore(*s)
-	fmt.Println("Unmapping memory")
+	s.syncStrategy.OnCloseStore(s)
 	return unix.Munmap(s.data)
 }
 
@@ -290,10 +230,10 @@ func (s *Store[T]) copyData(startOffset uint32, endOffset uint32, src []byte) {
 	s.mu.Lock()
 	copy(s.data[startOffset:endOffset], src)
 	s.mu.Unlock()
-	s.syncStrategy.OnDataCopyFinished(*s)
+	s.syncStrategy.OnDataCopyFinished(s)
 }
 
-func (s *Store[T]) syncData() {
+func (s *Store[T]) Sync() {
 	err := unix.Msync(s.data, unix.MS_SYNC)
 	if err != nil {
 		panic(fmt.Errorf("failed to sync data to db log: %v", err))
