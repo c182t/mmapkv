@@ -64,6 +64,27 @@ func (store *Store[T]) Transaction(fn func(tx *StoreTx[T])) error {
 	return nil
 }
 
+func (tx *StoreTx[T]) Get(key string) (T, error) {
+	if val, ok := tx.buffer[key]; ok {
+		return *val, nil
+	}
+
+	tx.store.mu.Lock()
+	val, err := tx.store.Get(key)
+	tx.store.mu.Unlock()
+
+	return val, err
+}
+
+func (tx *StoreTx[T]) Set(key string, value T) {
+	v := value
+	tx.buffer[key] = &v
+}
+
+func (tx *StoreTx[T]) Delete(key string) {
+	tx.buffer[key] = nil
+}
+
 func DropStore(dbName string) error {
 	var dbLogFileName = fmt.Sprintf("/tmp/mmapkv.%s.db.bin", dbName)
 	err := os.Remove(dbLogFileName)
@@ -117,10 +138,6 @@ func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy) (*Store[T], 
 	return &store, nil
 }
 
-func (s *Store[T]) Transaction(fn func()) {
-
-}
-
 func (s *Store[T]) Get(key string) (T, error) {
 	var nothing T
 
@@ -135,7 +152,6 @@ func (s *Store[T]) Get(key string) (T, error) {
 	valueByteSizeBytes := make([]byte, valueBytesSize)
 
 	s.mu.Lock()
-	fmt.Printf("valueSizeOffset=%d; valueBytesSize=%d", valueSizeOffset, valueBytesSize)
 	copy(valueByteSizeBytes, s.data[valueSizeOffset:valueSizeOffset+uint32(valueBytesSize)])
 	s.mu.Unlock()
 
