@@ -11,7 +11,7 @@ func main() {
 
 	//var store *mmapkv.Store[int]
 
-	store, err := mmapkv.NewStore[int]("main")
+	store, err := mmapkv.NewStore[int]("main", &mmapkv.NoSyncStrategy[int]{})
 	if err != nil {
 		panic(err)
 	}

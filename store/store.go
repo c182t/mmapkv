@@ -20,6 +20,53 @@ type KeyByteSize uint16
 type ValueByteSize uint16
 type Tombstone struct{}
 
+type StoreSyncStrategy[T any] interface {
+	OnStoreOpened(store Store[T])
+	OnDataCopyFinished(store Store[T])
+	OnCloseStore(store Store[T])
+}
+
+type NoSyncStrategy[T any] struct{}
+
+func (nss *NoSyncStrategy[T]) OnStoreOpened(store Store[T])      { return }
+func (nss *NoSyncStrategy[T]) OnDataCopyFinished(store Store[T]) { return }
+func (nss *NoSyncStrategy[T]) OnCloseStore(store Store[T])       { return }
+
+type PeriodicSyncStrategy[T any] struct {
+	delay time.Duration
+}
+
+func (pss *PeriodicSyncStrategy[T]) OnStoreOpened(store Store[T]) {
+	go store.syncDataPeriodic(pss.delay)
+}
+
+func (pss *PeriodicSyncStrategy[T]) OnDataCopyFinished(store Store[T]) { return }
+
+func (pss *PeriodicSyncStrategy[T]) OnCloseStore(store Store[T]) {
+	store.cancel()
+}
+
+func (store *Store[T]) syncDataPeriodic(delay time.Duration) {
+	fmt.Printf("Starting periodic data sync [%v interval]\n", delay)
+	ticker := time.NewTicker(delay)
+	defer func() {
+		fmt.Printf("Stopping periodic data sync [%v interval]\n", delay)
+		ticker.Stop()
+	}()
+
+	for range ticker.C {
+		select {
+		case <-store.ctx.Done():
+			fmt.Printf("Periodic data sync received cancel signal (performing final sync)\n")
+			store.syncData()
+			return
+		default:
+			fmt.Printf("[msync]\n")
+			store.syncData()
+		}
+	}
+}
+
 type Header struct {
 	version    uint8
 	lastOffset uint32
@@ -38,6 +85,7 @@ type Store[T any] struct {
 	offsetMap OffsetMap
 	dbName    string
 	StoreSync
+	syncStrategy StoreSyncStrategy[T]
 }
 
 func DropStore(dbName string) error {
@@ -49,27 +97,7 @@ func DropStore(dbName string) error {
 	return nil
 }
 
-func (store *Store[T]) syncDataPeriodic() {
-	fmt.Printf("Starting periodic data sync [2s interval]\n")
-	ticker := time.NewTicker(2 * time.Second)
-	defer func() {
-		fmt.Printf("Stopping periodic data sync [2s interval]\n")
-		ticker.Stop()
-	}()
-
-	for range ticker.C {
-		select {
-		case <-store.ctx.Done():
-			fmt.Printf("Periodic data sync received cancel signal!\n")
-			return
-		default:
-			fmt.Printf("[msync]\n")
-			store.syncData()
-		}
-	}
-}
-
-func NewStore[T any](dbName string) (*Store[T], error) {
+func NewStore[T any](dbName string, syncStrategy StoreSyncStrategy[T]) (*Store[T], error) {
 	sysPageSize := os.Getpagesize()
 	dbLogFileSize := 1 << 30
 
@@ -106,13 +134,13 @@ func NewStore[T any](dbName string) (*Store[T], error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	storeSync := StoreSync{&dataMutex, ctx, cancel}
 
-	store := Store[T]{header, data, OffsetMap{}, dbName, storeSync}
+	store := Store[T]{header, data, OffsetMap{}, dbName, storeSync, syncStrategy}
 
 	headerSize := store.writeHeader()
 	store.header.lastOffset = headerSize
 	store.syncData()
 
-	go store.syncDataPeriodic()
+	syncStrategy.OnStoreOpened(store)
 
 	return &store, nil
 }
@@ -169,7 +197,8 @@ func (s *Store[T]) Delete(key string) error {
 }
 
 func (s *Store[T]) Close() error {
-	s.cancel()
+	s.syncStrategy.OnCloseStore(*s)
+	fmt.Println("Unmapping memory")
 	return unix.Munmap(s.data)
 }
 
@@ -261,6 +290,7 @@ func (s *Store[T]) copyData(startOffset uint32, endOffset uint32, src []byte) {
 	s.mu.Lock()
 	copy(s.data[startOffset:endOffset], src)
 	s.mu.Unlock()
+	s.syncStrategy.OnDataCopyFinished(*s)
 }
 
 func (s *Store[T]) syncData() {

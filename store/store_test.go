@@ -19,7 +19,7 @@ func TestSetGet(t *testing.T) {
 
 	DropStore("TestSetGet")
 
-	store, err := NewStore[int]("TestSetGet")
+	store, err := NewStore[int]("TestSetGet", &NoSyncStrategy[int]{})
 	if err != nil {
 		panic(err)
 	}
@@ -53,7 +53,7 @@ func TestSetGetFloat32(t *testing.T) {
 
 	DropStore("TestSetGetFloat32")
 
-	store, err := NewStore[float32]("TestSetGetFloat32")
+	store, err := NewStore[float32]("TestSetGetFloat32", &PeriodicSyncStrategy[float32]{1 * time.Second})
 	if err != nil {
 		panic(err)
 	}
@@ -87,7 +87,7 @@ func TestSetGetFloat64(t *testing.T) {
 
 	DropStore("TestSetGetFloat64")
 
-	store, err := NewStore[float64]("TestSetGetFloat64")
+	store, err := NewStore[float64]("TestSetGetFloat64", &NoSyncStrategy[float64]{})
 	if err != nil {
 		panic(err)
 	}
@@ -124,7 +124,7 @@ func TestSetGetString(t *testing.T) {
 
 	DropStore("TestSetGetString")
 
-	store, err := NewStore[string]("TestSetGetString")
+	store, err := NewStore[string]("TestSetGetString", &NoSyncStrategy[string]{})
 	if err != nil {
 		panic(err)
 	}
@@ -157,7 +157,7 @@ func TestDelete(t *testing.T) {
 
 	DropStore("TestDelete")
 
-	store, err := NewStore[int]("TestDelete")
+	store, err := NewStore[int]("TestDelete", &NoSyncStrategy[int]{})
 	if err != nil {
 		panic(err)
 	}
@@ -197,7 +197,7 @@ func TestLargeSetGet(t *testing.T) {
 
 	DropStore("TestLargeSetGet")
 
-	store, err := NewStore[int]("TestLargeSetGet")
+	store, err := NewStore[int]("TestLargeSetGet", &PeriodicSyncStrategy[int]{1 * time.Second})
 	if err != nil {
 		panic(err)
 	}
